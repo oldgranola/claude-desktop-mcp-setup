@@ -1,9 +1,9 @@
 # Claude Desktop + Local MCP Servers
-## Complete Setup Guide for Linux Mint 22.3 (Debian)
+## Complete Setup Guide for Linux Mint 21.x and 22.x (Debian-based)
 
-*April 2026 | Based on a working production configuration*
+*April 2026 | Based on working production configurations on Linux Mint 21.3 and 22.3*
 
-> **Note:** This guide documents a real, tested setup. Every config file, wrapper script, and gotcha is drawn from an active working system running Claude Desktop (Linux community port) with seven local MCP servers.
+> **Note:** This guide documents real, tested setups. Every config file, wrapper script, and gotcha is drawn from active working systems running Claude Desktop (Linux community port) with seven local MCP servers.
 
 ---
 
@@ -17,7 +17,7 @@ The one exception is `claude_desktop_config.json`. JSON does not expand shell va
 
 ## 1. Overview
 
-This guide walks you through replicating a fully configured local AI workspace on any Linux Mint 22.3 machine. The setup gives Claude Desktop access to seven local MCP (Model Context Protocol) servers that extend what Claude can do — reading and writing files, running Excel operations, interacting with GitHub, searching the web, fetching URLs, managing containers, and executing git commands.
+This guide walks you through replicating a fully configured local AI workspace on any Linux Mint machine. The setup gives Claude Desktop access to seven local MCP (Model Context Protocol) servers that extend what Claude can do — reading and writing files, running Excel operations, interacting with GitHub, searching the web, fetching URLs, managing containers, and executing git commands.
 
 **What you will have when done:**
 
@@ -33,11 +33,11 @@ This guide walks you through replicating a fully configured local AI workspace o
 
 ### 2.1 System Requirements
 
-Linux Mint 22.3 (based on Ubuntu 24.04 / Debian). The steps below assume a standard desktop install with sudo access.
+Linux Mint 21.x (based on Ubuntu 22.04) or Linux Mint 22.x (based on Ubuntu 24.04). The steps below assume a standard desktop install with sudo access. Where the two versions differ, this guide calls it out explicitly — see Section 3.2 for the main difference in Python tool installation.
 
-### 2.2 Install curl, npm, and wget
+### 2.2 Install curl, wget, and npm
 
-Several installation steps depend on `curl`, `npm`, and `wget`. They are not always present by default on a fresh Linux Mint install.
+Several installation steps depend on `curl`, `wget`, and `npm`. They are not always present by default on a fresh Linux Mint install.
 
 **curl** is a command-line tool for downloading files and making web requests. It is used here to install nvm and uv.
 
@@ -90,11 +90,49 @@ npm --version    # npm is installed automatically alongside node
 
 ### 3.2 Python Tools
 
+How you install Python-based MCP tools depends on which version of Linux Mint you are running. The underlying reason is that Linux Mint 21.x ships with an older Python packaging system that is more restrictive about installing packages into the system Python environment.
+
+---
+
+**Linux Mint 22.x — use pip with the `--break-system-packages` flag:**
+
 ```bash
 pip install xlsxwriter --break-system-packages
 pip install mcp-server-fetch --break-system-packages
 pip install mcp-server-git --break-system-packages
 ```
+
+---
+
+**Linux Mint 21.x — use pipx instead:**
+
+`pipx` is a tool that installs each Python application into its own isolated environment and automatically makes it available on your PATH. It avoids the system Python restrictions that make plain `pip` unreliable on 21.x.
+
+First install pipx:
+
+```bash
+sudo apt install pipx
+```
+
+Then install the tools:
+
+```bash
+pipx install xlsxwriter
+pipx install mcp-server-fetch
+pipx install mcp-server-git
+```
+
+Confirm the tools are on your PATH after installation:
+
+```bash
+pipx ensurepath
+source ~/.bashrc
+which mcp-server-fetch && which mcp-server-git
+```
+
+> **Note:** Both methods place the `mcp-server-fetch` and `mcp-server-git` binaries in `~/.local/bin`, so the `claude_desktop_config.json` paths in Section 5.5 work identically on both versions.
+
+---
 
 > ⚠️ **Never use openpyxl to create .xlsx files** — it produces files unreadable in LibreOffice Calc and Office 365. Always use xlsxwriter for seeding new spreadsheets.
 
@@ -166,53 +204,46 @@ To update Claude Desktop in future, just run:
 sudo apt update && sudo apt upgrade
 ```
 
+> ⚠️ The Linux port behaves differently from the official Mac/Windows app in a few important ways — see Section 9 (Gotchas) for details.
+
 ---
 
-## 5. Configure Claude Desktop MCP Servers
+## 5. MCP Server Configuration
 
-All MCP server configuration lives in a single JSON file:
+### 5.1 The Security Model — Config vs. Secrets
 
-```
-~/.config/Claude/claude_desktop_config.json
-```
+This setup keeps a clean separation between configuration and secrets:
 
-This file tells Claude Desktop which MCP servers to launch, how to find their executables, and what environment variables to set. You will create or replace this file in the steps below.
+- **`~/.config/Claude/claude_desktop_config.json`** — contains only paths, package names, and non-sensitive settings. This file is safe to back up or share (for example, as a template for setting up another machine). It contains no tokens or API keys.
 
-### 5.1 Understanding the config structure
+- **`~/.claude-secrets`** — contains your actual API tokens and keys. This is the only file that is sensitive. It is never referenced directly in the config; wrapper scripts load it at runtime.
 
-Each entry under `mcpServers` defines one MCP server:
+> 🔒 **Protect `~/.claude-secrets`:** lock permissions with `chmod 600 ~/.claude-secrets` and never commit it to a git repository or share it.
 
-```json
-"server-name": {
-  "command": "/path/to/executable",
-  "args": ["arg1", "arg2"],
-  "env": {
-    "KEY": "value"
-  }
-}
-```
+### 5.2 The Secrets File
 
-- `command` — the executable to run (npx, python binary, shell script, etc.)
-- `args` — command-line arguments passed to it
-- `env` — environment variables set for that process only
-
-### 5.2 Why PATH must be explicit
-
-MCP server processes launched by Claude Desktop do **not** inherit your shell's PATH. If a server uses `npx` or a locally installed binary, you must include an explicit `PATH` entry in its `env` block pointing to the correct location — otherwise Claude Desktop cannot find the executable.
-
-For Node.js servers installed via nvm, this path includes the Node version number. After completing Section 3.1, find your path with:
+Create the secrets file and add your keys:
 
 ```bash
-echo "$HOME/.nvm/versions/node/$(node --version)/bin"
+nano ~/.claude-secrets
 ```
 
-Substitute the output into every `PATH` entry in the config below.
+Add these lines (fill in your actual keys):
 
-### 5.3 Wrapper scripts for secrets
+```bash
+export GITHUB_PERSONAL_ACCESS_TOKEN=ghp_your_token_here
+export BRAVE_API_KEY=BSA_your_key_here
+```
 
-Two MCP servers need API keys: `github` and `brave-search`. Rather than embedding tokens in the JSON config (where they would be visible in plaintext and potentially committed to git), we use wrapper shell scripts that:
-1. Source `~/.claude-secrets` to load keys into the environment
-2. Exec the real MCP server process
+Lock down the file permissions:
+
+```bash
+chmod 600 ~/.claude-secrets
+```
+
+### 5.3 Wrapper Scripts
+
+Two MCP servers (github and brave-search) use wrapper scripts that load the secrets file at runtime and then launch the server. This keeps tokens completely out of the config file.
 
 Create the wrappers directory:
 
@@ -220,61 +251,75 @@ Create the wrappers directory:
 mkdir -p ~/.config/Claude/wrappers
 ```
 
-**GitHub MCP wrapper** — save as `~/.config/Claude/wrappers/github-mcp.sh`:
+#### GitHub wrapper: `~/.config/Claude/wrappers/github-mcp.sh`
 
 ```bash
-#!/usr/bin/env bash
-source "$HOME/.claude-secrets"
+#!/bin/bash
+# Loads GitHub token from ~/.claude-secrets and runs the GitHub MCP server via podman
+if [ -f "$HOME/.claude-secrets" ]; then
+    source "$HOME/.claude-secrets"
+else
+    echo "ERROR: ~/.claude-secrets not found" >&2; exit 1
+fi
+if [ -z "$GITHUB_PERSONAL_ACCESS_TOKEN" ]; then
+    echo "ERROR: GITHUB_PERSONAL_ACCESS_TOKEN not set in ~/.claude-secrets" >&2; exit 1
+fi
 exec podman run -i --rm \
-  -e GITHUB_PERSONAL_ACCESS_TOKEN \
-  ghcr.io/github/github-mcp-server
+    -e GITHUB_PERSONAL_ACCESS_TOKEN \
+    ghcr.io/github/github-mcp-server
 ```
 
-**Brave Search MCP wrapper** — save as `~/.config/Claude/wrappers/brave-search-mcp.sh`:
+#### Brave Search wrapper: `~/.config/Claude/wrappers/brave-search-mcp.sh`
 
 ```bash
-#!/usr/bin/env bash
-NODE_BIN="$HOME/.nvm/versions/node/$(node --version)/bin"
-source "$HOME/.claude-secrets"
-exec "$NODE_BIN/npx" -y @modelcontextprotocol/server-brave-search
+#!/bin/bash
+# Loads Brave API key from ~/.claude-secrets and runs the Brave Search MCP server
+if [ -f "$HOME/.claude-secrets" ]; then
+    source "$HOME/.claude-secrets"
+else
+    echo "ERROR: ~/.claude-secrets not found" >&2; exit 1
+fi
+if [ -z "$BRAVE_API_KEY" ]; then
+    echo "ERROR: BRAVE_API_KEY not set in ~/.claude-secrets" >&2; exit 1
+fi
+export BRAVE_API_KEY
+export PATH="$HOME/.nvm/versions/node/$(node --version)/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+exec npx -y @modelcontextprotocol/server-brave-search
 ```
 
-Make both executable:
+Make both scripts executable:
 
 ```bash
-chmod +x ~/.config/Claude/wrappers/github-mcp.sh
-chmod +x ~/.config/Claude/wrappers/brave-search-mcp.sh
+chmod +x ~/.config/Claude/wrappers/github-mcp.sh && chmod +x ~/.config/Claude/wrappers/brave-search-mcp.sh
 ```
 
-### 5.4 Create the secrets file
+### 5.4 Install the podman-mcp-server Python Package
 
 ```bash
-touch ~/.claude-secrets && chmod 600 ~/.claude-secrets
+python3 -m venv ~/.venv && ~/.venv/bin/pip install podman-mcp-server
+~/.venv/bin/podman-mcp-server --version   # confirm
 ```
 
-Open it and add your keys:
+### 5.5 Generate the claude_desktop_config.json
 
-```bash
-# ~/.claude-secrets — never commit, never share
-export GITHUB_PERSONAL_ACCESS_TOKEN=your_github_token_here
-export BRAVE_API_KEY=your_brave_key_here
-```
-
-The `chmod 600` restricts the file to your user only — same security posture as `~/.ssh/id_rsa`.
-
-### 5.5 Write the main config file
-
-The config file requires absolute paths (JSON does not expand `~`). The command below writes the file with your actual home directory substituted in automatically:
+Because JSON does not expand shell variables, the config file needs your actual home directory path written into it. This command generates the file correctly for any user:
 
 ```bash
 cat > ~/.config/Claude/claude_desktop_config.json << EOF
 {
   "mcpServers": {
+    "podman": {
+      "command": "$HOME/.venv/bin/podman-mcp-server",
+      "args": [],
+      "env": {
+        "PODMAN_SOCK": "/run/user/$(id -u)/podman/podman.sock"
+      }
+    },
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "$HOME"],
       "env": {
-        "PATH": "$HOME/.nvm/versions/node/$(node --version)/bin:/home/$USER/.local/bin:/usr/local/bin:/usr/bin:/bin"
+        "PATH": "$HOME/.nvm/versions/node/$(node --version)/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
       }
     },
     "excel": {
@@ -282,12 +327,6 @@ cat > ~/.config/Claude/claude_desktop_config.json << EOF
       "args": ["--yes", "@negokaz/excel-mcp-server"],
       "env": {
         "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000",
-        "PATH": "$HOME/.nvm/versions/node/$(node --version)/bin:/home/$USER/.local/bin:/usr/local/bin:/usr/bin:/bin"
-      }
-    },
-    "git": {
-      "command": "$HOME/.local/bin/mcp-server-git",
-      "env": {
         "PATH": "$HOME/.nvm/versions/node/$(node --version)/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
       }
     },
@@ -301,16 +340,15 @@ cat > ~/.config/Claude/claude_desktop_config.json << EOF
         "PATH": "$HOME/.nvm/versions/node/$(node --version)/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
       }
     },
+    "git": {
+      "command": "$HOME/.local/bin/mcp-server-git",
+      "env": {
+        "PATH": "$HOME/.nvm/versions/node/$(node --version)/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+      }
+    },
     "brave-search": {
       "command": "$HOME/.config/Claude/wrappers/brave-search-mcp.sh",
       "args": []
-    },
-    "podman": {
-      "command": "$HOME/.venv/bin/podman-mcp-server",
-      "args": [],
-      "env": {
-        "PODMAN_SOCK": "/run/user/1000/podman/podman.sock"
-      }
     },
     "shell": {
       "command": "uvx",
@@ -319,44 +357,84 @@ cat > ~/.config/Claude/claude_desktop_config.json << EOF
         "ALLOW_COMMANDS": "python3,sqlite3,ls,cat,grep,find,wc,pwd"
       }
     }
+  },
+  "preferences": {
+    "chromeExtensionEnabled": false,
+    "coworkScheduledTasksEnabled": true,
+    "ccdScheduledTasksEnabled": true,
+    "sidebarMode": "chat",
+    "coworkWebSearchEnabled": true
   }
 }
 EOF
 ```
 
-> **Note on the shell MCP server:** The `ALLOW_COMMANDS` list restricts which commands Claude can run. Adjust this to match what you actually need — the list above is a conservative starting point.
+> **Note:** The `$(id -u)` part resolves your numeric user ID, used in the podman socket path. The `$(node --version)` part inserts your exact installed node version. Both are resolved at the time you run the command, so the resulting file contains clean absolute paths with no variables.
 
-### 5.6 Optional: shell MCP server
+Verify the file looks correct after generating it:
 
-The shell MCP server lets Claude run whitelisted bash commands directly. It uses `uvx` (installed in Section 3.4). The `ALLOW_COMMANDS` env var is a comma-separated whitelist — Claude cannot run anything not on this list.
+```bash
+cat ~/.config/Claude/claude_desktop_config.json
+```
 
-This server is useful for automation but gives Claude direct command execution. Set the whitelist to only what you need.
+### 5.6 Shell MCP Server — Permissions and Scope
+
+The shell MCP server (`mcp-shell-server`) lets Claude run bash commands on your machine. This is powerful but potentially dangerous if left unrestricted — Claude could in principle run any command your user account can run.
+
+The `ALLOW_COMMANDS` environment variable in the config is the safety gate. It is a comma-separated whitelist of the only commands Claude is permitted to execute. In the config above, the allowed set is:
+
+```
+python3, sqlite3, ls, cat, grep, find, wc, pwd
+```
+
+These are all read-oriented or Python execution — no package managers, no file deletion, no network tools, no compilers.
+
+**To customize the allowed commands** for your own needs, edit that line in the config. Some examples of commands you might add depending on your work:
+
+- `git` — if you want Claude to run git commands via shell rather than the dedicated git MCP
+- `pip` — if you want Claude to install Python packages (use with caution)
+- `npm` — similarly, for Node packages
+- `cargo`, `rustc` — for Rust development workflows
+
+> ⚠️ **Think carefully before adding commands to this list.** Any command here can be run by Claude without you typing it. Keep the list as short as your actual needs require.
+
+**Commands not on the whitelist must be run by you manually in a terminal.** This is by design — it keeps you in control of anything that modifies the system, installs software, or has side effects beyond reading files. Claude will tell you what command to run and why; you decide whether to run it.
+
+### 5.7 MCP Is Not Claude-Specific
+
+The MCP servers configured in this guide are built on the open Model Context Protocol standard — they are not tied to Claude. Other AI tools and interfaces that support MCP can connect to the same servers without any changes to this setup. Local model runners such as Ollama, and desktop AI interfaces that support MCP, can point at these same servers using their own configuration files in a format similar to `claude_desktop_config.json`. The servers themselves — filesystem, git, Excel, Podman, and the rest — simply sit and wait for any MCP-compatible client to call them. This means the infrastructure you build here is reusable across whatever AI tools you choose to run alongside Claude.
 
 ---
 
-## 6. First Launch and Verification
+## 6. Excel MCP — Important Workflow
 
-Launch Claude Desktop from the application menu. On first launch it will start all configured MCP servers in the background. Open a new chat and verify tools are available:
+The `@negokaz/excel-mcp-server` cannot create `.xlsx` files from scratch. Always use this two-step process:
 
-1. Ask Claude: `"List the files in my home directory"` — tests filesystem MCP
-2. Ask Claude: `"Search the web for Linux Mint latest version"` — tests brave-search MCP
-3. Ask Claude: `"What GitHub repos do I own?"` — tests github MCP
-4. Ask Claude: `"List running containers"` — tests podman MCP
-5. Ask Claude: `"Run the command: pwd"` — tests shell MCP
+**Step 1** — seed the file using xlsxwriter (creates a valid empty workbook):
 
-If any tool is missing, check Section 9.3 for how to read MCP server logs.
+```bash
+python3 -c "import xlsxwriter; wb = xlsxwriter.Workbook('/path/to/file.xlsx'); wb.add_worksheet('Sheet1'); wb.close()"
+```
+
+**Step 2** — write content using the excel MCP server tools (reads and writes via Excelize, which is LibreOffice-compatible).
+
+> ⚠️ Never use openpyxl to seed or create xlsx files. It produces files that fail to open correctly in both LibreOffice Calc and Microsoft Office 365.
 
 ---
 
-## 7. Additional Notes
+## 7. What Claude Can and Cannot Do With Files — and the Role of Claude Pro
 
-### 7.1 Binary file creation (.docx, .xlsx, .pdf)
+### 7.1 Local MCP File Capabilities
 
-Claude Desktop with local MCP does not natively generate binary files. Options:
+**Plain text files** (`.md`, `.txt`, `.json`, `.py`, `.js`, `.sh`, config files, etc.) — Claude can read and write these directly via the filesystem MCP. No special tools needed.
 
-- The **excel MCP** can read and write existing `.xlsx` files. To create a new one from scratch, seed it first: `python3 -c "import xlsxwriter; wb = xlsxwriter.Workbook('file.xlsx'); wb.add_worksheet(); wb.close()"`
-- For `.docx` and `.pdf`, Claude can write a Python script using appropriate libraries for you to run.
-- LibreOffice can also convert between formats from the command line.
+**Spreadsheets (`.xlsx`)** — handled by the dedicated excel MCP server, which understands the format natively. Claude can read cell data, write values, create sheets, and format content — but cannot create the file from scratch (use the xlsxwriter seed step in Section 6).
+
+**Binary document formats (`.docx`, `.pdf`)** — the filesystem MCP cannot interpret these. They are binary formats, not plain text. Claude cannot read their content or write them directly through the local MCP setup. Workarounds when working locally:
+
+- For `.docx`: Claude can generate a JavaScript script using the `docx` npm library, which you then run yourself in a terminal (`node script.js`). Claude writes the script; you execute it.
+- For `.pdf`: similarly, Claude can write a Python script using a library like `reportlab` or `pypdf2` for you to run.
+- LibreOffice can also convert between formats from the command line if you need to go from `.docx` to `.pdf` or vice versa.
 
 ### 7.2 Claude Pro Expands What Claude Desktop Can Do
 
@@ -364,13 +442,15 @@ The local MCP setup described in this guide gives Claude access to your machine'
 
 With Pro, Claude Desktop can use:
 
-- **Cowork** — Claude's agentic task execution mode, which can run multi-step workflows combining both local MCP tools and cloud-side capabilities in a single session.
-- **Claude's cloud-side code execution environment** — can run scripts, generate binary files like `.docx` and `.pdf` directly, and handle tasks that would otherwise require you to run scripts manually.
+- **Cowork** — Claude's agentic task execution mode, which can run multi-step workflows combining both local MCP tools and cloud-side capabilities in a single session. For example, Cowork can read a local file via the filesystem MCP, process it using a cloud code execution environment, and write results back locally.
+- **Claude's cloud-side code execution environment** — the same sandboxed environment available on claude.ai, which can run scripts, generate binary files like `.docx` and `.pdf` directly, and handle tasks that would otherwise require you to run scripts manually.
 - **Claude.ai MCP connectors** — Anthropic's hosted integrations (Gmail, Google Calendar, and others) can be used from within Claude Desktop sessions, alongside your local MCP servers.
 
-**Without Pro**, the local MCP setup carries more of the load. Tasks that Pro would handle via cloud execution instead require you to run scripts manually in a terminal.
+In practice this means a Pro user on Claude Desktop gets the full combined toolkit: local filesystem access, local git/github/Excel/podman tools, plus cloud execution and hosted connectors — all available in the same conversation.
 
-> **Note:** This guide covers setting up the local MCP side. The full capabilities of Cowork, cloud connectors, and Pro features are a separate topic not covered here.
+**Without Pro**, the local MCP setup carries more of the load. Tasks that Pro would handle via cloud execution (like generating a `.docx` directly) instead require you to run scripts manually in a terminal. This works well but does consume more of your local token budget for the back-and-forth involved.
+
+> **Note:** This guide covers setting up the local MCP side. The full capabilities of Cowork, cloud connectors, and Pro features are a separate topic not covered here — but the local MCP foundation built in this guide is what makes Claude Desktop genuinely useful with or without them.
 
 ---
 
@@ -404,6 +484,7 @@ Create it at:
 When Claude's Cowork feature runs, it overrides the filesystem MCP's allowed directory to a session-scoped sandbox path. This persists at the MCP process level — it is NOT cleared by opening a new chat tab.
 
 > ⚠️ **After any Cowork session, do a full Claude Desktop restart before using filesystem MCP tools.**
+> Command: `pkill -f "claude"` then relaunch from the app menu.
 
 To verify filesystem access at the start of any session, ask Claude to run: `filesystem:list_allowed_directories`
 
@@ -453,12 +534,12 @@ The GitHub Personal Access Token appears in plain text if placed directly in `cl
 |---|---|---|---|
 | filesystem | Read/write files under your home directory | npx (Node) | Scoped to home dir; Cowork can hijack — restart after Cowork |
 | excel | Read/write .xlsx spreadsheets | npx (Node/Go binary) | Cannot create files; seed with xlsxwriter first |
-| git | Git operations on local repos | Python binary | Installed via pip as mcp-server-git |
+| git | Git operations on local repos | Python binary | Installed via pip/pipx as mcp-server-git |
 | github | GitHub API — issues, PRs, repos | Podman container | Token loaded from ~/.claude-secrets via wrapper script |
-| fetch | Fetch URLs / web pages | Python binary | Installed via pip as mcp-server-fetch |
+| fetch | Fetch URLs / web pages | Python binary | Installed via pip/pipx as mcp-server-fetch |
 | brave-search | Web search via Brave API | npx (Node) | API key loaded from ~/.claude-secrets via wrapper script |
 | podman | Container management | Python venv binary | Requires podman.socket running as user service |
-| shell | Run whitelisted bash commands | uvx (Python) | Restricted by ALLOW_COMMANDS |
+| shell | Run whitelisted bash commands | uvx (Python) | Restricted by ALLOW_COMMANDS — see Section 5.6 |
 
 ---
 
@@ -467,11 +548,11 @@ The GitHub Personal Access Token appears in plain text if placed directly in `cl
 After completing setup, verify each component:
 
 1. Launch Claude Desktop and open a new chat
-2. Ask Claude: `"List the files in my home directory"` — tests filesystem MCP
-3. Ask Claude: `"Search the web for Linux Mint latest version"` — tests brave-search MCP
-4. Ask Claude: `"What GitHub repos do I own?"` — tests github MCP
-5. Ask Claude: `"List running containers"` — tests podman MCP
-6. Ask Claude: `"Run the command: pwd"` — tests shell MCP
+2. Ask Claude: "List the files in my home directory" — tests filesystem MCP
+3. Ask Claude: "Search the web for Linux Mint latest version" — tests brave-search MCP
+4. Ask Claude: "What GitHub repos do I own?" — tests github MCP
+5. Ask Claude: "List running containers" — tests podman MCP
+6. Ask Claude: "Run the command: pwd" — tests shell MCP
 7. If any tool is missing, check `~/.config/Claude/logs/mcp-server-[name].log` for errors
 
 ---
@@ -517,5 +598,5 @@ source ~/.claude-secrets && echo "GitHub token starts with: ${GITHUB_PERSONAL_AC
 
 ---
 
-*This document was generated from a live working configuration on Linux Mint 22.3, April 2026.*  
+*This document reflects working configurations tested on Linux Mint 21.3 and 22.3, April 2026.*
 *Community port of Claude Desktop: https://github.com/aaddrick/claude-desktop-debian*
